@@ -1,110 +1,96 @@
-const Wishlist = require("../models/whislistModel");
+const expressAsyncHandler = require("express-async-handler");
+const Product = require("../models/productsModel");
+const UserModel = require("../models/userModel");
 
+// 🔹 Add product to wishlist
 const addToWishlist = async (req, res) => {
   try {
-    const { userId, productId } = req.body;
+    const userId = req.user._id; // Middleware se
+    const { productId } = req.body;
 
-    if (!userId || !productId) {
-      return res.status(400).json({ message: "Missing required fields" });
+    if (!productId) {
+      return res.status(400).json({ message: "Product ID is required" });
     }
 
-    let wishlist = await Wishlist.findOne({ userId });
+    const user = await UserModel.findById(userId);
 
-    // Agar wishlist exist nahi karti
-    if (!wishlist) {
-      wishlist = await Wishlist.create({
-        userId,
-        products: [{ productId }],
-      });
-
-      return res.status(201).json({
-        success: true,
-        message: "Product added to wishlist",
-        wishlist,
-      });
+    // Check if product already in wishlist
+    if (user.wishlist.find(item => item.productId.toString() === productId)) {
+      return res.status(400).json({ message: "Product already in wishlist" });
     }
 
-    // Check duplicate
-    const productExists = wishlist.products.find(
-      (item) => item.productId.toString() === productId
-    );
+    user.wishlist.push({ productId });
+    await user.save();
 
-    if (productExists) {
-      return res.status(400).json({
-        success: false,
-        message: "Product already in wishlist",
-      });
-    }
+    const populatedUser = await user.populate("wishlist.productId");
 
-    wishlist.products.push({ productId });
-    await wishlist.save();
-
-    res.status(200).json({
-      success: true,
-      message: "Product added to wishlist",
-      wishlist,
-    });
+    res.status(200).json({ wishlist: populatedUser.wishlist });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      message: "Server Error",
-      error: error.message,
-    });
+    console.error("Add to wishlist error:", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 };
 
-
-const getWishlist = async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    const wishlist = await Wishlist.findOne({ userId }).populate(
-      "products.productId"
-    );
-
-    res.status(200).json({
-      success: true,
-      wishlist,
-    });
-  } catch (error) {
-    res.status(500).json({
-      message: "Server Error",
-      error: error.message,
-    });
-  }
-};
-
+// 🔹 Remove product from wishlist
 const removeFromWishlist = async (req, res) => {
   try {
-    const { userId, productId } = req.body;
+    const userId = req.user._id;
+    const { productId } = req.body;
 
-    const wishlist = await Wishlist.findOne({ userId });
-
-    if (!wishlist) {
-      return res.status(404).json({ message: "Wishlist not found" });
+    if (!productId) {
+      return res.status(400).json({ message: "Product ID is required" });
     }
 
-    wishlist.products = wishlist.products.filter(
-      (item) => item.productId.toString() !== productId
+    const user = await UserModel.findById(userId);
+
+    user.wishlist = user.wishlist.filter(
+      item => item.productId.toString() !== productId
     );
 
-    await wishlist.save();
+    await user.save();
 
-    res.status(200).json({
-      success: true,
-      message: "Product removed from wishlist",
-      wishlist,
-    });
+    const populatedUser = await user.populate("wishlist.productId");
+
+    res.status(200).json({ wishlist: populatedUser.wishlist });
   } catch (error) {
-    res.status(500).json({
-      message: "Server Error",
-      error: error.message,
-    });
+    console.error("Remove from wishlist error:", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 };
+
+// 🔹 Get user wishlist
+const getWishlist = expressAsyncHandler(async (req, res) => {
+  const userId = req.user?.id; // req.user auth middleware se aayega
+
+  if (!userId) {
+    res.status(401);
+    throw new Error("User not logged in");
+  }
+
+  // Get user's wishlist
+  const user = await UserModel.findById(userId).select("wishlist");
+
+  if (!user || !user.wishlist || user.wishlist.length === 0) {
+    return res.json([]); // wishlist empty hai
+  }
+
+  // Extract product IDs from wishlist
+  const wishlistProductIds = user.wishlist.map((item) => item.productId);
+
+  // Fetch products that are in wishlist
+  const products = await Product.find({ _id: { $in: wishlistProductIds } }).sort({ createdAt: -1 });
+
+  // Map products and mark them as wishlisted
+  const productsWithWishlist = products.map((product) => ({
+    ...product.toObject(),
+    isWishlisted: true
+  }));
+
+  res.json(productsWithWishlist);
+});
 
 module.exports = {
   addToWishlist,
-  getWishlist,
   removeFromWishlist,
+  getWishlist,
 };

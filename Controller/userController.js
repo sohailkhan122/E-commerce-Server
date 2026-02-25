@@ -1,70 +1,179 @@
-const UserModel = require('../models/userModel')
-const expressAsyncHandler = require("express-async-handler");
-const generateToken = require('../Config/generateToken');
-const crypto = require("crypto"); // ✅ ADDED (token generate karne ke liye) // ✅ ADDED (email bhejne ke liye)
+const UserModel = require("../models/userModel");
+const RefreshToken = require("../models/refreshTokenModel");
+const { generateAccessToken, generateRefreshToken } = require("../utils/generateToken");
+const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 const sgMail = require("@sendgrid/mail");
-
-const loginController = expressAsyncHandler(async (req, res) => {
-  console.log(req.body)
-  const { email, password } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ error: "Please fill in all the fields" });
-  }
-
-  const normalizedEmail = String(email).trim().toLowerCase();
-  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-  if (!emailRegex.test(normalizedEmail)) {
-    return res.status(400).json({ error: "Invalid email format" });
-  }
-
-  const user = await UserModel.findOne({ email: normalizedEmail });
-
-  if (user && (await user.matchPassword(password))) {
-    res.status(200).json(user);
-  } else {
-    res.status(401).json({ error: "Invalid email or Password" });
-  }
-});
+const expressAsyncHandler = require("express-async-handler");
 
 
-const registerController = expressAsyncHandler(async (req, res) => {
-  const { name, email, password } = req.body;
+// ================= REGISTER =================
+const registerUser = async (req, res) => {
+  try {
+    const {
+      name,
+      email,
+      password,
+      lastname,
+      region,
+      streetadress,
+      unit,
+      city,
+      state,
+      postalcode,
+      phone,
+      deliveryinstruction,
+      isAdmin,
+    } = req.body;
 
-  if (!name || !email || !password) {
-    res.status(40).json({ error: "All fields are required" })
-  }
-  const normalizedEmail = email.trim().toLowerCase();
-  const emailRegex = /^[a-zA-Z0-9._%-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: "Name, email and password required" });
+    }
 
-  if (!emailRegex.test(normalizedEmail)) {
-    res.status(400).json({ error: "Invalid email format" })
-  }
+    const existingUser = await UserModel.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ message: "User already exists" });
+    }
 
-  const userExist = await UserModel.findOne({ email: normalizedEmail });
-  if (userExist) {
-    res.status(400).json({ error: "User already exists" });
-  }
-
-  const user = new UserModel({ name, email: normalizedEmail, password });
-  await user.save();
-
-  if (user) {
-    res.status(201).json({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      token: generateToken(user._id),
+    const user = await UserModel.create({
+      name,
+      email,
+      password,
+      lastname,
+      region,
+      streetadress,
+      unit,
+      city,
+      state,
+      postalcode,
+      phone,
+      deliveryinstruction,
+      isAdmin,
     });
-  } else {
-    res.status(400).json({ error: "Registration failed" });
+
+    res.status(201).json({
+      message: "User registered successfully",
+      user: { id: user._id, email: user.email },
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
-});
+};
 
-// ================================
-// FORGOT PASSWORD CONTROLLER
-// ================================
 
+// ================= LOGIN =================
+const loginUser = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await UserModel.findOne({ email });
+    if (!user) return res.status(400).json({ message: "Invalid credentials" });
+
+    const isMatch = await user.matchPassword(password);
+    if (!isMatch) return res.status(400).json({ message: "Invalid credentials" });
+
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
+
+    await RefreshToken.create({
+      user: user._id,
+      token: refreshToken,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    });
+
+    res.cookie("accessToken", accessToken, {
+      httpOnly: true,
+      secure: false, // true in production
+      sameSite: "lax",
+      maxAge: 15 * 60 * 1000,
+    });
+
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: false, // true in production
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    res.json({
+      message: "Login successful",
+      isAdmin: user.isAdmin
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+
+// ================= REFRESH TOKEN =================
+const refreshTokenController = async (req, res) => {
+  try {
+    const { refreshToken } = req.cookies;
+    if (!refreshToken) return res.status(401).json({ message: "Unauthorized" });
+
+    const storedToken = await generateRefreshToken.findOne({ token: refreshToken });
+    if (!storedToken) return res.status(403).json({ message: "Invalid refresh token" });
+
+    jwt.verify(refreshToken, process.env.REFRESH_SECRET, async (err, decoded) => {
+      if (err) return res.status(403).json({ message: "Expired refresh token" });
+
+      const user = await UserModel.findById(decoded.id);
+      if (!user) return res.status(404).json({ message: "User not found" });
+
+      // Rotate refresh token
+      await RefreshToken.deleteOne({ token: refreshToken });
+
+      const newRefreshToken = generateRefreshToken(user);
+      const newAccessToken = generateAccessToken(user);
+
+      await RefreshToken.create({
+        user: user._id,
+        token: newRefreshToken,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      });
+
+      res.cookie("accessToken", newAccessToken, {
+        httpOnly: true,
+        secure: false,
+        sameSite: "lax",
+        maxAge: 15 * 60 * 1000,
+      });
+
+      res.cookie("refreshToken", newRefreshToken, {
+        httpOnly: true,
+        secure: false,
+        sameSite: "lax",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
+
+      res.json({ message: "Token refreshed" });
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+
+// ================= LOGOUT =================
+const logoutUser = async (req, res) => {
+  try {
+    const { refreshToken } = req.cookies;
+
+    if (refreshToken) {
+      await RefreshToken.deleteOne({ token: refreshToken });
+    }
+
+    res.clearCookie("accessToken");
+    res.clearCookie("refreshToken");
+
+    res.json({ message: "Logged out successfully" });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+
+// ================= FORGOT PASSWORD =================
 const forgotPasswordController = expressAsyncHandler(async (req, res) => {
   sgMail.setApiKey(process.env.SENDGRID_API_KEY);
   console.log(process.env.SENDGRID_API_KEY)
@@ -89,7 +198,7 @@ const forgotPasswordController = expressAsyncHandler(async (req, res) => {
 
   const message = {
     to: user.email,
-    from: "m.sohailaqeel@gmail.com", // IMPORTANT: verified sender
+    from: process.env.EMAIL_FROM, // IMPORTANT: verified sender
     subject: "Password Reset Link",
     html: `
       <h2>Password Reset Request</h2>
@@ -104,119 +213,92 @@ const forgotPasswordController = expressAsyncHandler(async (req, res) => {
   res.status(200).json({ message: "Reset link sent to email" });
 });
 
-
-// ================================
-// RESET PASSWORD CONTROLLER
-// ================================
+// ================= RESET PASSWORD =================
 const resetPasswordController = expressAsyncHandler(async (req, res) => {
   const { token } = req.params;
   const { password } = req.body;
 
-  // Hash token to compare with DB
   const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
 
-  // Find user with valid token and not expired
   const user = await UserModel.findOne({
     resetPasswordToken: hashedToken,
     resetPasswordExpire: { $gt: Date.now() },
   });
 
-  if (!user) {
-    return res.status(400).json({ error: "Invalid or expired token" });
-  }
+  if (!user) return res.status(400).json({ message: "Invalid or expired token" });
 
-  // ✅ Just assign new password (model will hash it)
   user.password = password;
   user.resetPasswordToken = undefined;
   user.resetPasswordExpire = undefined;
 
   await user.save();
 
-  res.status(200).json({ message: "Password reset successfully" });
+  res.json({ message: "Password reset successful" });
 });
 
 
-const updateUser = async (req, res) => {
-  const {
-    name,
-    lastname,
-    region,
-    companyname,
-    streetadress,
-    unit,
-    city,
-    state,
-    phone,
-    postalcode,
-    deliveryinstruction,
-  } = req.body;
-  console.log('Received body:', req.body);
-  console.log('Received params:', req.params);
-  const { userId } = req.params
-
+// ================= GET USER BY ID =================
+const getUserByIdController = async (req, res) => {
   try {
-    const user = await UserModel.findById(userId);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    user.name = name;
-    user.lastname = lastname;
-    user.region = region;
-    user.companyname = companyname;
-    user.streetadress = streetadress;
-    user.unit = unit;
-    user.city = city;
-    user.state = state;
-    user.phone = phone;
-    user.postalcode = postalcode;
-    user.deliveryinstruction = deliveryinstruction;
+    const user = await UserModel.findById(req.params.userId).select("-password");
+    if (!user) return res.status(404).json({ message: "User not found" });
 
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+
+// ================= UPDATE USER =================
+const updateUserController = async (req, res) => {
+  try {
+    // req.user id protect middleware se aayegi
+    const userId = req.user._id;
+    const user = await UserModel.findById(userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    Object.assign(user, req.body); // body me jo fields hain unko update kar do
     await user.save();
 
-    return res.status(200).json(user);
+    res.json({ message: "User updated successfully", user });
   } catch (error) {
-    return res.status(500).json({ error: 'Error updating user: ' + error.message });
+    res.status(500).json({ message: error.message });
   }
 };
 
-const getUserByIdController = async (req, res) => {
-  const { userId } = req.params;
 
+// ================= GET ALL USERS =================
+const getAllUsersController = async (req, res) => {
   try {
-    const user = await UserModel.findById(userId).select('-password');
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    return res.status(200).json({
-      name: user.name,
-      lastname: user.lastname,
-      region: user.region,
-      companyname: user.companyname,
-      streetadress: user.streetadress,
-      unit: user.unit,
-      city: user.city,
-      state: user.state,
-      phone: user.phone,
-      postalcode: user.postalcode,
-      deliveryinstruction: user.deliveryinstruction,
-    });
+    const users = await UserModel.find().select("-password");
+    res.status(200).json(users);
   } catch (error) {
-    console.error('Error retrieving user by ID:', error);
-    return res.status(500).json({ message: 'Internal server error' });
+    res.status(500).json({ message: error.message });
   }
 };
 
-const getAllUsers = async (req, res) => {
-  try {
-    const users = await UserModel.find();
-    res.status(200).json({ success: true, data: users });
-  } catch (error) {
-    console.error('Error fetching users:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch users' });
+const getCurrentUser = expressAsyncHandler(async (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ message: "User not found" });
   }
+
+  res.status(200).json({
+    success: true,
+    user: req.user, // already password remove ho chuka hai
+  });
+});
+
+
+module.exports = {
+  registerUser,
+  loginUser,
+  refreshTokenController,
+  logoutUser,
+  forgotPasswordController,
+  resetPasswordController,
+  getUserByIdController,
+  updateUserController,
+  getAllUsersController,
+  getCurrentUser
 };
-
-
-
-module.exports = { registerController, loginController, updateUser, getUserByIdController, getAllUsers, forgotPasswordController, resetPasswordController }

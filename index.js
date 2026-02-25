@@ -4,16 +4,23 @@ const cors = require('cors')
 const { default: mongoose } = require('mongoose');
 const userRoutes = require('./Routes/userRoutes')
 const productRoute = require('./Routes/productRoute')
+const paymentRoute = require('./Routes/paymentRoute')
 const cartRoute = require('./Routes/cartRoute')
 const orderRoute = require('./Routes/orderRoute')
-const adminRoutes = require('./Routes/adminRoute')
-const whislistRoute = require('./Routes/whislistRoute')
+const whislistRoute = require('./Routes/whislistRoute');
+const cookieParser = require('cookie-parser');
 
+dotenv.config();
 
 const app = express();
-dotenv.config();
 app.use(express.json());
-app.use(cors())
+app.use(cookieParser());
+app.use(
+    cors({
+        origin: process.env.FRONTEND_URL,
+        credentials: true,
+    })
+);
 
 const connectDb = async () => {
     try {
@@ -24,17 +31,17 @@ const connectDb = async () => {
     }
 }
 connectDb()
-
 app.get("/", (req, res) => {
+    res.cookie("testCookie", "Hello World", { httpOnly: true, secure: true, sameSite: "strict" });
     res.send("api running")
 });
 
-app.use('/admin', adminRoutes)
 app.use('/user', userRoutes)
 app.use('/product', productRoute)
 app.use('/cart', cartRoute)
 app.use('/order', orderRoute)
 app.use('/wishlist', whislistRoute)
+app.use('/payment', paymentRoute)
 
 
 const PORT = process.env.PORT || 5000

@@ -1,145 +1,106 @@
-const CartItem = require("../models/cartModel");
-const Order = require("../models/orderModel");
+// controllers/orderController.js
+const orderModel = require('../models/orderModel');
 
-const createOrder = async (req, res) => {
+// Get orders for logged-in user
+
+const getAllOrders = async (req, res) => {
   try {
-    const { userId, productDetails, total, paymentDetails } = req.body;
+    const orders = await orderModel
+      .find()
+      .populate("userId", "name email phone")
+      .sort({ createdAt: -1 });
 
-    const order = new Order({
-      userId,
-      productDetails,
-      total,
-      paymentDetails
+    res.status(200).json({
+      success: true,
+      totalOrders: orders.length,
+      orders,
     });
 
-    await order.save();
-
-    const cartItem = await CartItem.findOne({ userId });
-
-    if (!cartItem) {
-      return res.status(404).json({ message: 'Cart item not found' });
-    }
-
-    productDetails.forEach(async (product) => {
-      const productId = product.productId;
-      cartItem.products = cartItem.products.filter(item => item.productId.toString() !== productId.toString());
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
     });
-
-    await cartItem.save();
-
-    res.status(201).json({ success: true, data: order });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, error: 'Server Error' });
   }
 };
-
-const getOrdersByUserId = async (req, res) => {
-  const { userId } = req.params;
-
+const getUserOrders = async (req, res) => {
   try {
-    const orders = await Order.find({ userId });
+    // JWT middleware se userId mil rahi hai
+    const userId = req.user._id;
 
-    if (orders.length === 0) {
-      return res.status(404).json({ message: 'No orders found for the user ID' });
+    // Orders find karo jisme userId match ho
+    const orders = await orderModel.find({ userId }).sort({ createdAt: -1 });
+
+    if (!orders || orders.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No orders found for this user',
+      });
     }
-    res.status(200).json({ success: true, orders });
+
+    res.status(200).json({
+      success: true,
+      orders,
+    });
   } catch (error) {
-    console.error('Error fetching orders by user ID:', error);
-    res.status(500).json({ success: false, error: 'Server Error' });
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+    });
   }
 };
 
-const removeProductDetail = async (req, res) => {
-  const { orderId, productDetailId } = req.params;
-
-  try {
-    const order = await Order.findById(orderId);
-
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-
-    const index = order.productDetails.findIndex(detail => detail._id.toString() === productDetailId);
-
-    if (index === -1) {
-      return res.status(404).json({ success: false, message: 'Product detail not found in the order' });
-    }
-
-    const removedProductPrice = order.productDetails[index].price;
-
-    order.productDetails.splice(index, 1);
-    let newTotal = order.total - removedProductPrice;
-    order.total = newTotal;
-
-    await order.save();
-
-    if (order.productDetails.length === 0) {
-      await Order.findByIdAndDelete(orderId);
-      return res.json({ success: true, message: 'Order deleted successfully' });
-    }
-
-    return res.json({ success: true, message: 'Product detail removed successfully', order });
-  } catch (error) {
-    console.error('Error removing product detail:', error);
-    return res.status(500).json({ success: false, message: 'Failed to remove product detail' });
-  }
-};
-
-const fatchAllOrders = async (req, res) => {
-  try {
-    const products = await Order.find();
-    res.status(200).json(products);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
-
-const getOrderById = async (req, res) => {
-  const orderId = req.params.orderId;
-  try {
-    const order = await Order.findById(orderId);
-
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-
-    res.status(200).json({ success: true, order });
-  } catch (error) {
-    console.error('Error fetching order by ID:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch order' });
-  }
-};
-
-
+// ✅ Update Order Status
 const updateOrderStatus = async (req, res) => {
-  const { orderId } = req.params;
-  const { status } = req.body;
-
   try {
-    const order = await Order.findByIdAndUpdate(
-      orderId,
-      { status },
-      { new: true }
-    );
+    const { orderId } = req.params; // order id
+    const { status } = req.body;
 
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
+    // ✅ Allowed statuses
+    const allowedStatus = [
+      'pending',
+      'processing',
+      'shipped',
+      'delivered',
+      'cancelled',
+    ];
+
+    if (!allowedStatus.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status value',
+      });
     }
 
-    res.json({ message: 'Order status updated successfully', order });
-  } catch (error) {
-    console.error('Error updating order status:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-}
+    // ✅ Find order
+    const order = await orderModel.findById(orderId);
 
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found',
+      });
+    }
+
+    // ✅ Update status
+    order.status = status;
+    await order.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Order status updated successfully',
+      order,
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+    });
+  }
+};
 module.exports = {
-  createOrder,
-  getOrdersByUserId,
-  removeProductDetail,
-  fatchAllOrders,
-  getOrderById,
-  updateOrderStatus
+  getUserOrders,
+  updateOrderStatus,
+  getAllOrders
 };

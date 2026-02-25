@@ -1,124 +1,159 @@
-const Product = require('../models/productsModel');
+const Product = require("../models/productsModel");
+const asyncHandler = require("express-async-handler");
+const UserModel = require("../models/userModel");
 
-const createProduct = async (req, res) => {
-    try {
-        const { title, productName, images, price, category, type } = req.body;
+// ✅ Allowed categories and types from model
+const allowedCategories = ["Men", "Women", "Shoes", "Accessories", "NewArrivals", "InTheLimelight"];
+const allowedTypes = ["Tops", "PrintedT-Shirt", "PlainT-Shirt", "Kurti", "Jeans", "Trousers", "Shorts", "Skirts", "Dresses", "Jumpsuits", "Sneakers", "Boots", "Sandals", "Heels", "Bags", "Watches", "Jewelry"];
 
-        const product = new Product({ title, productName, images, price, category, type });
-        await product.save();
-        res.status(201).json(product);
+// ✅ CREATE PRODUCT (Admin only)
+const createProduct = asyncHandler(async (req, res) => {
+    const { title, productName, images, price, category, type, stock } = req.body;
+
+    // Required fields
+    if (!title || !productName || !price || !category || !type) {
+        res.status(400);
+        throw new Error("Required fields missing");
     }
-    catch (error) {
-        console.error('Error creating product:', error);
-        res.status(500).json({ message: error.message });
+
+    // Enum validation
+    if (!allowedCategories.includes(category)) {
+        res.status(400);
+        throw new Error(`Category must be one of: ${allowedCategories.join(", ")}`);
     }
-};
+    if (!allowedTypes.includes(type)) {
+        res.status(400);
+        throw new Error(`Type must be one of: ${allowedTypes.join(", ")}`);
+    }
 
+    const product = new Product({
+        title,
+        productName,
+        images: images && images.length > 0 ? images : ["/images/default-product.jpg"],
+        price,
+        category,
+        type,
+        stock: stock || 0,
+        createdBy: req.user._id, // ✅ Admin ID from JWT middleware
+    });
 
-const editProduct = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { title, productName, images, price, category, type } = req.body;
+    const createdProduct = await product.save();
+    res.status(201).json(createdProduct);
+});
 
-        const product = await Product.findById(id);
-        if (!product) {
-            return res.status(404).json({ message: 'Product not found' });
+// ✅ GET ALL PRODUCTS
+const getAllProducts = asyncHandler(async (req, res) => {
+    const products = await Product.find().sort({ createdAt: -1 }); // latest first
+    res.json(products);
+});
+
+// ✅ GET PRODUCT BY ID
+const getProductById = asyncHandler(async (req, res) => {
+    const product = await Product.findById(req.params.id);
+    if (!product) {
+        res.status(404);
+        throw new Error("Product not found");
+    }
+    res.json(product);
+});
+
+// ✅ UPDATE PRODUCT (Admin only)
+const updateProduct = asyncHandler(async (req, res) => {
+    const { title, productName, images, price, category, type, stock, isActive } = req.body;
+
+    const product = await Product.findById(req.params.id);
+    if (!product) {
+        res.status(404);
+        throw new Error("Product not found");
+    }
+
+    // Update fields only if provided
+    if (title) product.title = title;
+    if (productName) product.productName = productName;
+    if (images && images.length > 0) product.images = images;
+    if (price !== undefined) product.price = price;
+
+    if (category) {
+        if (!allowedCategories.includes(category)) {
+            res.status(400);
+            throw new Error(`Category must be one of: ${allowedCategories.join(", ")}`);
         }
-
-        product.title = title;
-        product.productName = productName;
-        product.images = images;
-        product.price = price;
         product.category = category;
+    }
+
+    if (type) {
+        if (!allowedTypes.includes(type)) {
+            res.status(400);
+            throw new Error(`Type must be one of: ${allowedTypes.join(", ")}`);
+        }
         product.type = type;
-
-        await product.save();
-
-        res.status(200).json(product);
-    } catch (error) {
-        console.error('Error editing product:', error);
-        res.status(500).json({ message: error.message });
     }
-};
 
-const getSingleProduct = async (req, res) => {
-    try {
-        const productId = req.params.id;
+    if (stock !== undefined) product.stock = stock;
+    if (isActive !== undefined) product.isActive = isActive;
 
-        const product = await Product.findById(productId);
+    const updatedProduct = await product.save();
+    res.json(updatedProduct);
+});
 
-        if (product) {
-            res.json(product);
-        } else {
-            res.status(404).json({ message: 'Product not found' });
-        }
-    } catch (error) {
-        console.error('Error fetching product:', error);
-        res.status(500).json({ message: 'Internal server error' });
+// ✅ DELETE PRODUCT (Admin only)
+const deleteProduct = asyncHandler(async (req, res) => {
+    const product = await Product.findById(req.params.id);
+
+    if (!product) {
+        res.status(404);
+        throw new Error("Product not found");
     }
-};
 
-const getAllProducts = async (req, res) => {
-    try {
-        const products = await Product.find();
-        res.status(200).json(products);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
+    // 🔹 Replace remove() with deleteOne()
+    await product.deleteOne();
+
+    res.json({ message: "Product removed successfully" });
+});
+
+const getProductsByCategory = asyncHandler(async (req, res) => {
+    const { category } = req.params;
+
+    // Validate category
+    if (!allowedCategories.includes(category)) {
+        res.status(400);
+        throw new Error(`Category must be one of: ${allowedCategories.join(", ")}`);
     }
-};
 
-const deleteProducts = async (req, res) => {
-    try {
-        const productId = req.params.productId;
+    // Fetch products in this category
+    const products = await Product.find({ category }).sort({ createdAt: -1 });
 
-        const deletedProduct = await Product.findByIdAndDelete(productId);
-        if (!deletedProduct) {
-            return res.status(404).json({ message: 'Product not found' });
-        }
-        res.json({ message: 'Product deleted successfully' });
-    } catch (error) {
-        console.error('Error deleting product:', error);
-        res.status(500).json({ message: 'Failed to delete product' });
+    if (!products || products.length === 0) {
+        res.status(404);
+        throw new Error("No products found for this category");
     }
-};
 
-const productGetByName = async (req, res) => {
-    const categoryName = req.params.name;
+    // Check if user is logged in
+    const userId = req.user?.id; // req.user should be set by auth middleware
 
-    try {
-        const products = await Product.find({ category: { $regex: categoryName, $options: 'i' } });
-        res.json(products);
-    } catch (error) {
-        console.error('Error fetching products by name:', error);
-        res.status(500).json({ message: 'Failed to fetch products by name' });
-    }
-};
+    if (userId) {
+        // Get user's wishlist
+        const user = await UserModel.findById(userId).select("wishlist");
+        const wishlistIds = user.wishlist.map((item) => item.productId.toString());
 
-const getProductsByIds = async (req, res) => {
-    try {
-        const { ids } = req.body; // frontend se array ayega
-
-        if (!ids || !Array.isArray(ids) || ids.length === 0) {
-            return res.status(400).json({ message: "IDs array is required" });
-        }
-
-        const products = await Product.find({
-            _id: { $in: ids }
+        // Map products and add temporary field
+        const productsWithWishlist = products.map((product) => {
+            const isWishlisted = wishlistIds.includes(product._id.toString());
+            return { ...product.toObject(), isWishlisted };
         });
 
-        res.status(200).json(products);
-    } catch (error) {
-        console.error("Error fetching products by IDs:", error);
-        res.status(500).json({ message: error.message });
+        return res.json(productsWithWishlist);
     }
-};
+
+    // If user not logged in, just send products normally
+    res.json(products);
+});
 
 module.exports = {
     createProduct,
     getAllProducts,
-    deleteProducts,
-    productGetByName,
-    editProduct,
-    getSingleProduct,
-    getProductsByIds
+    getProductById,
+    updateProduct,
+    deleteProduct,
+    getProductsByCategory
 };
